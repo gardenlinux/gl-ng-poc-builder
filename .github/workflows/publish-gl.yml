@@ -44,12 +44,12 @@ jobs:
           cd bin
           oras push \
             "${IMAGE}:${{ github.sha }}" \
-            "${IMAGE}:latest" \
             --artifact-type application/vnd.gardenlinux.gl.toolchain \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
             gl:application/vnd.gardenlinux.gl.binary \
             exec_env_stub:application/vnd.gardenlinux.gl.binary
+          oras tag "${IMAGE}:${{ github.sha }}" latest
 
       - name: Summary
         run: |
