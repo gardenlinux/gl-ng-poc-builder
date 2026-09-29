@@ -45,7 +45,11 @@ func setupLocalRepoInMountNS(mountNS *container.MountNS, store *objstore.Store, 
 			continue
 		}
 		hash, err := objstore.NewHash(pkg.SHA256)
-		if err != nil || !store.Blobs.Has(hash) {
+		if err != nil {
+			continue
+		}
+		store.EnsureBlob(hash) // pull-through by digest (§11.6)
+		if !store.Blobs.Has(hash) {
 			continue
 		}
 

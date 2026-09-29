@@ -9,16 +9,15 @@ import (
 )
 
 // SerializeManifest encodes outputs in the generic manifest format:
-// "<hash> <name>\n" per entry.
+// "<hash> <name>\n" per entry. It delegates to objstore.SerializeManifest, the
+// single source of truth for the byte format, so pull-through reconstruction
+// (objstore.Store.MapGet) matches the engine's output exactly.
 func SerializeManifest(outputs []Output) string {
-	var sb strings.Builder
-	for _, out := range outputs {
-		sb.WriteString(out.Hash.String())
-		sb.WriteByte(' ')
-		sb.WriteString(out.Name)
-		sb.WriteByte('\n')
+	oo := make([]objstore.Output, len(outputs))
+	for i, o := range outputs {
+		oo[i] = objstore.Output{Name: o.Name, Hash: o.Hash}
 	}
-	return sb.String()
+	return objstore.SerializeManifest(oo)
 }
 
 // storeManifest serializes outputs as "<hash> <name>\n" lines, stores as a blob,
@@ -88,9 +87,13 @@ func ResolveOutputRefs(a Artifact, store *objstore.Store) (objstore.Hash, []objs
 	return manifestHash, leaves, nil
 }
 
-// loadManifest reads the manifest blob for the given identity and parses it.
+// loadManifest reads the manifest for the given identity and parses it. It
+// uses Store.MapGet, so on a local miss it falls through to the remote:
+// reconstructing the manifest and pulling every leaf turns a would-be rebuild
+// into a pull-through cache hit (oci-cache-design.md §11.6). With no remote
+// configured this is exactly the old local Map.Get + parse.
 func (e *Engine) loadManifest(identity objstore.Hash) ([]Output, error) {
-	manifestHash, err := e.store.Map.Get(identity)
+	manifestHash, err := e.store.MapGet(identity)
 	if err != nil {
 		return nil, err
 	}

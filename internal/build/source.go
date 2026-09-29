@@ -32,10 +32,7 @@ func (s *DebianPkgBuild) LoadBinaryPkg(binaryName string, store *objstore.Store)
 	if err != nil {
 		return nil
 	}
-	if !store.Map.Has(srcID) {
-		return nil
-	}
-	manifestHash, err := store.Map.Get(srcID)
+	manifestHash, err := store.MapGet(srcID)
 	if err != nil {
 		return nil
 	}
@@ -192,7 +189,7 @@ func (s *DebianPkgBuild) Build(ctx artifact.BuildContext) ([]artifact.Output, er
 		return nil, fmt.Errorf("load lockfile: %w", err)
 	}
 
-	lockfileReader, err := store.Blobs.Open(lockfileHash)
+	lockfileReader, err := store.OpenBlob(lockfileHash)
 	if err != nil {
 		return nil, fmt.Errorf("open lockfile blob: %w", err)
 	}

@@ -216,7 +216,7 @@ func (b *debianBinaryPkg) findDebHash(inputs map[string]objstore.Hash) (objstore
 // This is a HARD check — any missing dep means the binary package cannot be
 // included in the rootfs (since we'd need a mirrored binary to satisfy it).
 func (b *debianBinaryPkg) validateLocality(store *objstore.Store, controlHash objstore.Hash) error {
-	reader, err := store.Blobs.Open(controlHash)
+	reader, err := store.OpenBlob(controlHash)
 	if err != nil {
 		return fmt.Errorf("binary package %s: open control blob: %w", b.name, err)
 	}

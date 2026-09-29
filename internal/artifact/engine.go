@@ -287,12 +287,12 @@ func (e *Engine) buildNode(ctx context.Context, n *node) BuildResult {
 		return fail(fmt.Errorf("compute identity: %w", err))
 	}
 
-	if e.store.Map.Has(identity) {
+	// Cache-hit check. loadManifest goes through Store.MapGet, so with a
+	// remote configured a local miss falls through to the registry (pulling
+	// the manifest + leaves) rather than triggering a rebuild. A miss with no
+	// remote (or a genuine remote miss) returns an error and we build.
+	if outputs, err := e.loadManifest(identity); err == nil {
 		l.Info("cache hit: %s (id=%s)", n.artifact, identity.Short())
-		outputs, err := e.loadManifest(identity)
-		if err != nil {
-			return fail(fmt.Errorf("load cached manifest: %w", err))
-		}
 		e.graph.mu.Lock()
 		n.outputs = outputs
 		e.graph.mu.Unlock()

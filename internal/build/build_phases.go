@@ -95,6 +95,9 @@ func (s *DebianPkgBuild) setupBuildEnv(ctx context.Context, store *objstore.Stor
 			continue
 		}
 		if !store.Blobs.Has(hash) {
+			store.EnsureBlob(hash) // pull-through by digest (§11.6)
+		}
+		if !store.Blobs.Has(hash) {
 			continue
 		}
 		blobPath := store.Blobs.Path(hash)
@@ -133,6 +136,7 @@ func (s *DebianPkgBuild) setupBuildEnv(ctx context.Context, store *objstore.Stor
 		if strings.HasSuffix(ref.Name, ".asc") || strings.HasSuffix(ref.Name, ".sig") {
 			continue
 		}
+		store.EnsureBlob(ref.Hash) // pull-through by digest (§11.6)
 		blobPath := store.Blobs.Path(ref.Hash)
 		tarDst := rootfsPath + "/src/" + ref.Name
 		if err := mountNS.CreateFile(tarDst, 0644); err != nil {

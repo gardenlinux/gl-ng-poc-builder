@@ -17,7 +17,7 @@ import (
 // parsePackageFromManifest finds the control:<name> + <name>.deb pair and
 // returns it as an index.Package.
 func parsePackageFromManifest(store *objstore.Store, manifestHash objstore.Hash, binaryName string) *index.Package {
-	reader, err := store.Blobs.Open(manifestHash)
+	reader, err := store.OpenBlob(manifestHash)
 	if err != nil {
 		return nil
 	}
@@ -52,7 +52,7 @@ func parsePackageFromManifest(store *objstore.Store, manifestHash objstore.Hash,
 		return nil
 	}
 
-	controlReader, err := store.Blobs.Open(controlHash)
+	controlReader, err := store.OpenBlob(controlHash)
 	if err != nil {
 		return nil
 	}

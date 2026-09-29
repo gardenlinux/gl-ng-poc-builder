@@ -138,16 +138,19 @@ re-fetchable input (`.dsc`, cached indexes), so deleting it is safe. `--dry-run`
 reports how many blobs would be removed without deleting. GC needs the conf-dir
 (and arch/stub) to build the graph — see [the cache guide](../guide/cache.md).
 
-This is the local half of the [OCI-cache design](./oci-cache-design.md); the
-remote pull-through that would let a GC'd input be re-fetched by digest is not
-yet implemented, so until then a reclaimed input is restored by re-running the
-import/lockfile command.
+This is the local half of the [OCI-cache design](./oci-cache-design.md). The
+remote pull-through that lets a GC'd input be re-fetched by digest is now
+implemented (set `GL_REGISTRY`); when no registry is configured, a reclaimed
+input is still restored by re-running the import/lockfile command.
 
 ## Why this design
 
 The whole store fits in a few hundred lines of Go (see [`internal/objstore`](../internals/foundations/objstore.md)). A more elaborate design — SQLite, embedded KV store, S3 wrapper — would buy nothing. Content-addressed file trees are:
 
-- **Mountable as a remote**: a future remote object store interface (out of Phase 1 scope) just exposes the same hash-based GET. Cache misses fall through to remote, hits stay local.
+- **Mountable as a remote**: the remote object-store interface (`Store.Remote`,
+  implemented by [`internal/ociclient`](../internals/foundations/ociclient.md)
+  over an OCI registry) exposes the same hash-based GET. Cache misses fall
+  through to the remote and are materialized locally; hits stay local.
 - **Diff-friendly**: `rsync` between two stores is correct as long as the receiver is up-to-date with the sender's `pins/` directory.
 - **Inspectable**: `ls blobs/<2char>/` lists the blobs in a shard; `cat map/<2char>/<rest>` shows what an identity points to.
 

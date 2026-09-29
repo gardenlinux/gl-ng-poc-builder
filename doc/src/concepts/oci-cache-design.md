@@ -1,14 +1,17 @@
 # OCI-backed object store & pull-through cache (design draft)
 
-> **Status:** the **local half is implemented** — the pin mechanism
-> (`pins/<pin-id>.yml`), the graph-reachability-plus-pins garbage collector
-> (`gl cache gc`), the `gl cache pin` CLI (list / show / drop), and the
-> auto-pinning of `gl import` and `gl lockfile` / `gl lockfile-rootfs`. The old
-> `Sources` type has been retired. The **remote half** (OCI registry,
-> pull-through read, publish; §7–§9) is **not yet implemented** — until it
-> lands, a blob GC treats as "re-fetchable by digest" is in practice re-fetched
-> by re-running the import/lockfile command against the upstream repo. This page
-> describes the intended direction for turning the local object store into the
+> **Status:** **both halves are implemented.** The **local half** — the pin
+> mechanism (`pins/<pin-id>.yml`), the graph-reachability-plus-pins garbage
+> collector (`gl cache gc`), the `gl cache pin` CLI (list / show / drop), and
+> the auto-pinning of `gl import` and `gl lockfile` / `gl lockfile-rootfs`. The
+> old `Sources` type has been retired. The **remote half** (OCI registry
+> client, pull-through read hook, `gl cache push`, `GL_REGISTRY` wiring; §11–§13)
+> now lands as `internal/ociclient`, `Store.OpenBlob` / `Store.MapGet` /
+> `Store.EnsureBlob`, and `gl cache push`. A blob the GC treats as "re-fetchable
+> by digest" is now actually pulled from the configured registry on demand (and,
+> failing that, still re-fetchable by re-running the import/lockfile command
+> against the upstream repo). This page
+> describes turning the local object store into the
 > local half of a pull-through cache backed by an OCI registry, the refactor of
 > garbage collection that it required, and the **pin** mechanism that protects
 > locally-imported inputs from GC. It covers both **artifact outputs** (blobs
@@ -493,3 +496,485 @@ the local store is complete for the pull-through/publish work to build on.
 - `doc/src/concepts/identity.md` — its description of GC roots is currently
   aspirational and wrong; align it with the graph+pin model.
 - This page's status note, once implementation begins.
+
+---
+
+## 11. Remote registry — concrete on-registry layout
+
+§7 fixed the shape (ORAS manifests, tags as roots); this section nails down the
+**exact bytes** a future implementer must produce, grounded in the code as it
+stands today (verified 2026-09-28 against `internal/objstore`,
+`internal/artifact`). Everything here is registry-side wire format; §12 covers
+the Go that emits and consumes it.
+
+### 11.0 Facts the layout builds on
+
+- Every address in the store — blob content hash, `map` key (artifact
+  identity), `map` value (manifest hash) — is the **same `objstore.Hash`**: a
+  validated 64-lowercase-hex SHA-256 (`internal/objstore/hash.go:26`,
+  `NewHash` rejects anything not `^[0-9a-f]{64}$`). This is exactly OCI's
+  `sha256:<64hex>` digest minus the `sha256:` prefix, so blob↔OCI-blob and
+  identity↔tag conversions are pure string surgery, no re-hashing.
+- A built artifact's output closure is already exposed structurally by
+  `artifact.ResolveOutputRefs(a, store) (manifest objstore.Hash, leaves []objstore.Hash, err error)`
+  (`internal/artifact/manifest.go:71`) — this is the single source of truth the
+  uploader consumes. It errors on unbuilt artifacts; the uploader skips those.
+- A pin is `Pin{ ID string /*16-hex*/, Name string, Blobs []Hash }`
+  (`internal/objstore/pins.go:25`); `Pins.List()` and `Pins.ReachableBlobs()`
+  give the uploader its input.
+- There is **no OCI/registry/HTTP-client dependency in `go.mod`** today (only
+  `golang.org/x/{sys,term}` and `yaml.v3`). The registry client is built on
+  stdlib `net/http` (§12.1) — the codebase already uses `net/http` directly for
+  APT fetching, so this matches house style; no ORAS Go SDK is pulled in.
+
+### 11.1 Registry namespace (the OCI `<name>`)
+
+All objects for one logical gl-ng store live under a single configurable OCI
+repository name, e.g. `gl-ng` (GHCR: `ghcr.io/<org>/gl-ng`; local test:
+`localhost:5000/gl-ng`). Blobs are shared across all artifact/pin manifests in
+that one repository — critical, because fan-in leaves (§8) and a `.deb` that is
+both an output and a build-deps input must be **one** registry blob addressed by
+digest, never duplicated per tag. Do **not** split outputs and pins into
+separate repositories; that would break blob sharing across the two classes.
+
+The repository name is the *only* deployment knob that varies between local
+test and GHCR. Tag structure, media types, and annotations below are identical
+everywhere.
+
+### 11.2 Blobs: 1:1, by digest
+
+Each local blob `h` (an `objstore.Hash`) maps to the OCI blob
+`sha256:<h>`, pushed to / fetched from `/v2/<name>/blobs/sha256:<h>` via the
+standard chunked/monolithic upload dance (`POST` → `PUT ?digest=`) and
+`GET`. Content-addressing lines up exactly; a blob already present
+(`HEAD /v2/<name>/blobs/sha256:<h>` → 200) is not re-uploaded. This holds
+uniformly for leaf blobs, manifest-referenced `.deb`s, lockfile index blobs, and
+orig tarballs — the store does not care what a blob *is*.
+
+The local **manifest blob** (the `"<hash> <name>\n"` text,
+`internal/artifact/manifest.go:13`) is **never pushed as an OCI blob** — it is a
+local-only entrypoint reconstructed from the OCI manifest's layer annotations on
+pull (§11.4). This is the one asymmetry: the identity→outputs *mapping* is
+preserved, the manifest *bytes* are not.
+
+### 11.3 Tags — the two namespaces
+
+Tags are the only GC roots on the registry, and a tag reference must satisfy
+the OCI grammar `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`. Our identifiers do:
+
+| Purpose | Tag | Points at |
+|---|---|---|
+| **Output artifact** | `build-artifact-<identity>` | image manifest, §11.4 |
+| **Source import pin** | `import-<pin-id>` | image manifest, §11.5 |
+| **Build-deps pin** | `builddeps-<pin-id>` | image manifest, §11.5 |
+
+- `<identity>` is the 64-hex artifact identity verbatim (`Identity().String()`).
+  `build-artifact-` + 64 hex = 78 chars, within the 128 limit. The `/`-style
+  hierarchical tag floated in §7 (`build_artifacts/<sha>`) is **rejected**: a
+  slash is not legal in an OCI tag (it is the repo-name separator). We encode
+  the "namespace" as a tag *prefix* instead — same grouping intent, valid
+  grammar. Listing all outputs is `GET /v2/<name>/tags/list` filtered by the
+  `build-artifact-` prefix.
+- `<pin-id>` is the pin's existing 16-hex id (`pins.go`), reused verbatim so a
+  local-pin ↔ remote-publication match is trivial string equality (§7b). The
+  source/build-deps split is carried in the prefix, mirroring the local pin
+  granularity (§6).
+
+Tag prefixes are a documented constant set; a future arch-index (§9) would add
+an `index-` family without disturbing these.
+
+### 11.4 Output-artifact manifest (per `build-artifact-<identity>` tag)
+
+An OCI **image manifest** (`application/vnd.oci.image.manifest.v1+json`),
+ORAS-style (config is the empty descriptor, artifact identity carried in
+`artifactType` + annotations):
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.gl-ng.artifact.v1",
+  "config": {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "size": 2,
+    "data": "e30="
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.gl-ng.output.v1",
+      "digest": "sha256:<leaf-hash>",
+      "size": <bytes>,
+      "annotations": { "org.opencontainers.image.title": "<output-name>" }
+    }
+  ],
+  "annotations": {
+    "vnd.gl-ng.identity": "<identity-hex>"
+  }
+}
+```
+
+- **Empty config** is the OCI-standard sentinel: media type
+  `application/vnd.oci.empty.v1+json`, digest of the two bytes `{}`
+  (`sha256:44136fa3…ff8a`), size 2, inline `data: "e30="`. The two `{}` bytes
+  must still be pushed as a blob (registries require the config blob to exist);
+  push it once, it is shared by every manifest.
+- **One layer per leaf**, in the deterministic order `ResolveOutputRefs`
+  returns them (which is manifest-file order — stable). Each layer's
+  `org.opencontainers.image.title` annotation carries the **output `Name`**
+  (the second field of the local manifest line). This is what lets pull-through
+  reconstruct the local `"<hash> <name>"` manifest exactly (§11.6) without ever
+  transporting the manifest blob.
+- `artifactType` `application/vnd.gl-ng.artifact.v1` marks the manifest as ours;
+  the `vnd.gl-ng.identity` top-level annotation redundantly carries the identity
+  (the tag already encodes it, but the annotation survives if a tool strips the
+  tag). Media type `application/vnd.gl-ng.output.v1` on layers is cosmetic —
+  content is opaque bytes — but keeps `crane manifest` output self-describing.
+- The manifest is `PUT /v2/<name>/manifests/build-artifact-<identity>` with
+  `Content-Type` = the manifest media type. Tagging *is* the PUT — the registry
+  roots the layers off the tagged manifest, so registry GC keeps the leaves with
+  no bare-blob reliance (§7a).
+
+### 11.5 Input-pin manifest (per `import-<id>` / `builddeps-<id>` tag)
+
+Same image-manifest skeleton, different `artifactType` and annotation set, and
+the pin's blobs flattened into sibling layers (§7b):
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.gl-ng.pin.v1",
+  "config": { "mediaType": "application/vnd.oci.empty.v1+json", "...": "…" },
+  "layers": [
+    { "mediaType": "application/vnd.gl-ng.pin-blob.v1", "digest": "sha256:<blob>", "size": <n> }
+  ],
+  "annotations": {
+    "vnd.gl-ng.pin.id":   "<16-hex>",
+    "vnd.gl-ng.pin.name": "<pin human name incl. InRelease timestamp>",
+    "vnd.gl-ng.pin.kind": "import" | "builddeps"
+  }
+}
+```
+
+- Layers are the pin's `Blobs` list verbatim (index blob + `.deb`s for a
+  build-deps pin; orig tarballs for a source pin), each a bare digest+size
+  descriptor. **No per-layer title annotation** — unlike outputs, a pin has no
+  name→blob map to preserve; the git repo's `sources.yml` / `*-deps.yml` hashes
+  remain the authority for what references what (§7b). The manifest exists only
+  so the tag roots the blobs against registry GC.
+- The pin's human `name` (which includes the `InRelease` timestamp, §6) rides in
+  `vnd.gl-ng.pin.name`, so a remote observer can reconstruct the local pin file
+  faithfully if ever needed — though the local side deliberately does **not**
+  re-materialize pins from the remote (§7b: pull-through fetches input blobs by
+  digest, driven by git-repo hashes, never by pin tag).
+
+### 11.6 Pull-through read path (map miss)
+
+When `Store.Map.Get(identity)` misses locally, the pull-through layer (§12.3):
+
+1. `GET /v2/<name>/manifests/build-artifact-<identity>` with
+   `Accept: application/vnd.oci.image.manifest.v1+json`. 404 → genuine miss,
+   return not-found (unchanged local semantics).
+2. For each layer descriptor, `GET /v2/<name>/blobs/sha256:<digest>` and stream
+   into `store.Blobs.Store(r)` — which re-hashes on write and so **verifies the
+   digest for free** (a corrupt/mismatched blob yields a different hash and the
+   manifest reference would dangle; treat a mismatch as a fetch failure).
+3. Reconstruct the local manifest: for each layer, emit
+   `Output{Name: layer.annotations["org.opencontainers.image.title"], Hash: <digest>}`,
+   `SerializeManifest(outputs)` (`manifest.go:13`), `store.Blobs.Store` it →
+   local manifest hash `m`.
+4. `store.Map.Set(identity, m, validate=true)` — now a permanent local hit.
+
+Input blobs (`.deb`, orig, lockfile index) are **not** pulled via pin tags. They
+are fetched **by digest** (`GET /v2/<name>/blobs/sha256:<h>`) exactly when some
+by-digest consumer (lockfile install, source assembly) asks the blob store for a
+hash it lacks — see §12.2 for where that hook lives. Pin tags exist purely to
+keep the registry from GC-ing those blobs; the local side never reads them.
+
+### 11.7 What is deliberately *not* on the registry
+
+- The local manifest blob bytes (§11.2) — reconstructed, not transported.
+- Pin *files* — the remote has pin *manifests*; the local `pins/<id>.yml` is a
+  separate representation that merely agrees on id and name (§7b).
+- `map/` entries as such — an output tag *is* the remote map entry; there is no
+  separate remote map object.
+- Cache-only blobs — `InRelease` cookie cache, `Packages.gz`/`Sources.gz`
+  (§8). These are never published and never pulled; a miss re-downloads from the
+  Debian mirror as today.
+
+---
+
+## 12. Implementation plan — `gl` binary
+
+Scope: the OCI client, the pull-through hook inside the object store, and a
+publish (`gl cache push`) command. Builds strictly on top of the completed
+local half (§10). Follow the
+[doc-and-tests rule](../guidelines/doc-and-tests-rule.md); each step names its
+test obligation. Read before starting: `internal/objstore/{store,blobs,mapstore,pins}.go`,
+`internal/artifact/manifest.go`, `cmd/gl/cache.go`, `cmd/gl/util.go`
+(`openStore`), and re-verify every signature — they are quoted from the
+2026-09-28 tree.
+
+### Step 1 — `internal/ociclient`: a minimal registry client
+
+New package `internal/ociclient` over stdlib `net/http` (no new go.mod dep
+beyond what the registry-auth story eventually needs — deferred, §9). It speaks
+just the OCI distribution v2 verbs we use:
+
+```go
+type Client struct { base string; name string; http *http.Client /* + auth, later */ }
+
+func New(registry, name string) *Client            // registry e.g. "localhost:5000"
+
+func (c *Client) HasBlob(h objstore.Hash) (bool, error)                 // HEAD .../blobs/sha256:<h>
+func (c *Client) PushBlob(h objstore.Hash, r io.Reader, size int64) error // POST+PUT monolithic
+func (c *Client) PullBlob(h objstore.Hash) (io.ReadCloser, int64, error)  // GET .../blobs/sha256:<h>
+func (c *Client) PutManifest(tag string, body []byte, mediaType string) error // PUT .../manifests/<tag>
+func (c *Client) GetManifest(tag string) (body []byte, mediaType string, err error) // GET; ok=false on 404
+func (c *Client) ListTags() ([]string, error)                            // GET .../tags/list (paginate)
+```
+
+- Digest strings are `"sha256:" + h.String()`; parse the reverse with
+  `strings.TrimPrefix` + `objstore.NewHash`.
+- **Manifest structs**: define Go types for the image manifest, descriptor, and
+  the annotation keys (§11.4/§11.5) in a `manifest.go` within this package.
+  Marshal deterministically (`encoding/json`; field order is struct order, which
+  is fine — registries do not require canonical JSON, only that the pushed bytes
+  match the digest *if* you reference the manifest by digest; we reference by
+  tag, so byte-canonicality is not load-bearing).
+- The empty-config blob (`{}`, `sha256:44136fa3…`) is a package constant; push
+  it lazily before the first manifest that needs it.
+- **Tests (mandatory, against the local registry from §13):** blob round-trip
+  (push→has→pull, digest verified); manifest put→get→parse; `ListTags` prefix
+  filtering; 404 on a missing manifest returns not-found, not an error. Gate
+  these behind a build tag or `GL_TEST_REGISTRY` env so the default `go test`
+  (no registry) stays hermetic — mirror how stub-dependent tests already gate on
+  `GL_EXEC_ENV_STUB`.
+
+### Step 2 — pull-through hook in the object store
+
+The read-miss fallthrough must live where every lookup already funnels, without
+the artifact layer knowing about OCI. Two miss points (§11.6):
+
+- **Map miss** (`MapStore.Get` returns not-found): reconstruct-from-tag path.
+- **Blob miss** (`Blobs.Open` on an absent hash): by-digest pull.
+
+Design decision — **wrap, don't thread a client through every call site.** Add
+an optional remote to the `Store`:
+
+```go
+type Store struct { root string; Blobs *Blobs; Map *MapStore; Pins *Pins; remote Remote /* nil = pure local */ }
+type Remote interface {
+    PullBlobByDigest(h Hash) (io.ReadCloser, int64, error)      // 404 → ErrNotFound
+    PullOutputManifest(identity Hash) (leaves []Output, ok bool, err error)
+}
+```
+
+- `Blobs.Open(h)`: on local ENOENT, if the owning `Store` has a `remote`, pull
+  by digest, `Store` it (re-hash verifies), then re-open. Requires `Blobs` to
+  reach its `Store`'s remote — give `Blobs`/`MapStore` a back-pointer set in
+  `Open()`, or (cleaner) move the fallthrough into thin `Store.OpenBlob` /
+  `Store.MapGet` wrappers and have callers use those. **Pick the wrapper
+  approach**: it keeps `Blobs`/`MapStore` policy-free (consistent with
+  `Sweep` being dumb, §5) and confines OCI knowledge to `Store` + `ociclient`.
+- `Store.MapGet(identity)`: local `Map.Get`; on miss and `remote != nil`, call
+  `PullOutputManifest`, and on `ok` do the reconstruct-and-`Map.Set` of §11.6,
+  then return the fresh manifest hash.
+- The remote is constructed from config/env (§13 uses `GL_REGISTRY`); a nil
+  remote is the current pure-local behavior, so existing tests are unaffected.
+- **Audit call sites**: replace direct `store.Blobs.Open` / `store.Map.Get` at
+  the read paths that should fall through (artifact build input resolution,
+  manifest parsing) with the `Store` wrappers `OpenBlob` / `MapGet`. Leave
+  `gl cache blobs get` / `map get` on the *direct* local API — cache-admin
+  commands must show local truth, not silently pull.
+- **Not every fall-through read goes through `Open`/`Get`.** Rootfs assembly and
+  the lockfile `.deb` install paths do **not** read blobs via `Blobs.Open`: they
+  need a *filesystem path* to bind-mount or hand to `dpkg-deb`, so they call
+  `Blobs.Path(h)` after gating on `Blobs.Has(h)`
+  (`internal/build/rootfs.go`, `internal/build/mount_helpers.go`,
+  `internal/build/build_phases.go`, `internal/install/{bootstrap,install}.go`).
+  Hooking only `OpenBlob`/`MapGet` would silently miss these. A third wrapper
+  covers them: `Store.EnsureBlob(h) error` — a no-op if the blob is already
+  local or no remote is set, otherwise a pull-by-digest that materializes it
+  into the local store (re-hash verifies). Each such site calls `EnsureBlob(h)`
+  immediately before its `Blobs.Has` guard / `Blobs.Path` read. The three §11.6
+  fall-through paths (map miss, blob-open miss, blob-path miss) thus map to the
+  three wrappers `MapGet`, `OpenBlob`, `EnsureBlob`. Importer / apt-repo /
+  resolve reads stay on the direct local API — those are re-downloadable caches,
+  not published pull-through inputs (§11.7).
+- **Tests (mandatory):** with a seeded local registry and an empty local store,
+  a `MapGet` for a published identity reconstructs the manifest + pulls all
+  leaves + sets the map, and the reconstructed local manifest is byte-identical
+  to the original `SerializeManifest` output; a blob `Open` miss pulls by digest
+  and verifies; a genuinely-absent identity/blob still reports not-found; a
+  nil-remote store behaves exactly as today (regression guard).
+
+### Step 3 — `gl cache push` (publish)
+
+New subcommand under the existing hand-rolled `cmdCache` switch
+(`cmd/gl/cache.go:23`; no cobra). It publishes **both** classes (§7):
+
+```text
+gl cache push [--registry <r>] [--conf-dir <d>] [--arch <a>] [--stub <p>]
+              [--outputs] [--pins] [--dry-run]
+```
+
+- Default (`--outputs --pins` both implied when neither given): push everything
+  the local store can.
+- **Outputs**: build the graph (`build.BuildGraph` → `Discover`, same as
+  `cacheGC`), for each node `ResolveOutputRefs`; on error skip (unbuilt). For
+  each built node: `HasBlob` each leaf → `PushBlob` the misses → assemble the
+  §11.4 manifest → `PutManifest("build-artifact-"+identity, …)`. Skip if the
+  tag already exists and `--force` is not set (cheap idempotency: `GetManifest`
+  → present → skip).
+- **Pins**: `store.Pins.List()`; for each, `PushBlob` missing blobs → §11.5
+  manifest → `PutManifest("import-"|"builddeps-"+id, …)`. The kind prefix comes
+  from the pin's `Kind` field (`objstore.PinKindImport` / `PinKindBuildDeps`),
+  recorded at pin-creation time: `gl import` creates `import` pins, both
+  `gl lockfile` / `gl lockfile-rootfs` build-deps sites create `builddeps` pins.
+  A pin file written before `Kind` existed loads as `import` for back-compat.
+- `--dry-run`: list what would be pushed (tags + blob counts), push nothing.
+- Store root from `GL_CACHE` via `openStore("")` (unchanged); registry from
+  `--registry` or `GL_REGISTRY`.
+- **Tests (mandatory):** against the §13 registry — push a built graph, then
+  assert every expected `build-artifact-<id>` tag exists and each manifest's
+  layers match `ResolveOutputRefs`; push pins and assert `import-`/`builddeps-`
+  tags with the right layer sets; re-push is idempotent (no duplicate blobs,
+  tags unchanged); `--dry-run` pushes nothing. Round-trip: push from store A,
+  point an empty store B's remote at the registry, `MapGet` an identity, assert
+  a full local hit — this is the end-to-end pull-through proof and the highest-
+  value test.
+
+### Step 4 — wiring & config surface
+
+- `GL_REGISTRY` env (and `--registry` flag on push) select the registry+repo,
+  e.g. `localhost:5000/gl-ng`. Absent → no remote (pure local, pull-through
+  disabled). Document precedence like `GL_CACHE`.
+- `gl cache status` gains a line: configured registry (or "none"), and — cheap —
+  whether it is reachable (`GET /v2/`). Optional; keep it non-fatal.
+- **Docs to update with this work**: `doc/src/guide/cache.md` (`push`, the
+  `GL_REGISTRY` env, pull-through in the `gc`/miss narrative),
+  `doc/src/concepts/object-store.md` ("Mountable as a remote" bullet is now
+  real), this page's status note, and a new
+  `doc/src/internals/foundations/ociclient.md` for the client package.
+
+### Ordering
+
+Step 1 is standalone (needs only §13's registry to test). Step 2 depends on 1.
+Step 3 depends on 1 (and the recommended pin-`Kind` prerequisite). Step 4 is
+polish on 2+3. The Step-3 round-trip test is the acceptance gate for the whole
+remote half.
+
+---
+
+## 13. Testing locally without GHCR — a real registry in this container
+
+The plan must be provable on the dev box, which is **inside a `podman`
+container** (`/run/systemd/container` = `podman`). Running the registry as a
+*nested container* is therefore out. Two facts make a clean local test possible:
+
+1. **systemd user services work here** — the session is lingering
+   (`loginctl show-user` → `Linger=yes`, `State=lingering`,
+   `XDG_RUNTIME_DIR=/run/user/1000`), so `systemctl --user` can run a long-lived
+   service with no root and no container.
+2. **Debian stable ships the CNCF registry as a plain binary** —
+   `apt-get install docker-registry` (2.8.3, ~4.7 MB, zero extra deps) installs
+   `/usr/bin/docker-registry` (the `github.com/distribution/distribution`
+   `registry serve` binary), a default `/etc/docker/registry/config.yml`, and a
+   *system* unit we ignore. It is a single static Go binary — exactly the
+   upstream OCI reference registry, so ORAS/OCI conventions are fully honoured,
+   including `storage.delete.enabled: true` for exercising registry-side GC.
+
+### 13.1 One-time setup
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker-registry
+```
+
+Write a **user** config that removes the default htpasswd auth (local test
+only), binds a high port, and stores under a writable dir — do **not** reuse the
+packaged `/etc/docker/registry/config.yml` (it enables `auth.htpasswd` and roots
+storage at `/var/lib/docker-registry`, which a non-root user cannot write):
+
+```yaml
+# ~/.config/gl-ng-registry/config.yml
+version: 0.1
+log: { level: warn }
+storage:
+  filesystem: { rootdirectory: /home/dev/.local/share/gl-ng-registry }
+  delete: { enabled: true }        # needed to test registry-side deletes/GC
+http:
+  addr: 127.0.0.1:5000
+health:
+  storagedriver: { enabled: false }
+```
+
+(No `auth:` block → anonymous push/pull, correct for a loopback test registry.)
+
+### 13.2 systemd user unit
+
+```ini
+# ~/.config/systemd/user/gl-ng-registry.service
+[Unit]
+Description=Local OCI registry for gl-ng tests
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/docker-registry serve %h/.config/gl-ng-registry/config.yml
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now gl-ng-registry.service
+curl -fsS http://127.0.0.1:5000/v2/ && echo "  registry up"   # → 200 {}
+```
+
+`GL_REGISTRY=localhost:5000/gl-ng` then targets it. `systemctl --user status`
+/ `journalctl --user -u gl-ng-registry` for logs; `systemctl --user restart` to
+reset in-memory state (filesystem storage persists across restarts).
+
+### 13.3 Verifying by hand (independent of `gl`)
+
+`skopeo` (also in Debian stable) cross-checks what `gl cache push` produced
+without trusting our own client:
+
+```bash
+skopeo list-tags --tls-verify=false docker://localhost:5000/gl-ng
+skopeo inspect --raw --tls-verify=false \
+  docker://localhost:5000/gl-ng:build-artifact-<identity> | jq .
+```
+
+Assert the raw manifest matches §11.4 (media types, empty config, one layer per
+leaf with the `org.opencontainers.image.title` = output name). A blob spot-check:
+`curl -fsS http://127.0.0.1:5000/v2/gl-ng/blobs/sha256:<h> | sha256sum` must
+echo `<h>` — the registry stores by the same digest the local store uses.
+
+### 13.4 Cleaning between runs
+
+Wiping registry state is `rm -rf ~/.local/share/gl-ng-registry/*` (or
+`systemctl --user stop` first). Registry-side GC (to test that tags root blobs
+and untagged blobs collect) is `docker-registry garbage-collect
+~/.config/gl-ng-registry/config.yml` — run against the stopped service. For a
+fully hermetic Go test, point storage at a `t.TempDir()`-style path via a
+per-test config and a throwaway port, or simply gate the registry-dependent
+tests on `GL_TEST_REGISTRY` (§12 Step 1) and run them against this one shared
+service in CI/dev, keeping `go test` with no env hermetic and offline.
+
+### 13.5 Why not the alternatives
+
+- **Nested container registry** (`podman run registry`): blocked — we are
+  already in a `podman` container and cannot assume nested containers work; the
+  user ruled this out explicitly.
+- **A pure-Go in-process registry in the test binary** (e.g.
+  `go-containerregistry`'s `registry` package): attractive for hermeticity and a
+  reasonable *future* addition, but pulls a new go.mod dependency into a module
+  that currently has almost none, and tests our client against a *different*
+  implementation than production (GHCR). The `docker-registry` binary is the
+  same reference implementation the ecosystem targets, costs one `apt-get`, and
+  needs no dependency change — preferred for now. Revisit an in-process registry
+  only if the systemd-user approach proves flaky in CI.

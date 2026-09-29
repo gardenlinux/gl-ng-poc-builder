@@ -10,7 +10,9 @@ The object store at `~/.cache/gl-ng` (or wherever `--cache` / `GL_CACHE` points)
 gl cache status
 ```
 
-Prints a summary: cache root, blob count, map entry count, and pin count.
+Prints a summary: cache root, blob count, map entry count, and pin count. If a
+pull-through registry is configured (`GL_REGISTRY`, see below) it also prints
+the registry ref and whether it is reachable.
 
 ## `gl cache blobs`
 
@@ -79,6 +81,44 @@ to build the graph; it defaults to the discovered conf-dir and host arch, but
 pass `--conf-dir` / `--arch` / `--stub` to be explicit. With no conf-dir it
 protects only pinned blobs (all build outputs become collectible) and warns.
 GC takes no `--cache` flag — set `GL_CACHE` to target a non-default store.
+
+## `gl cache push`
+
+```bash
+gl cache push [--registry <r>] [--conf-dir <dir>] [--arch <arch>] [--stub <path>]
+              [--outputs] [--pins] [--dry-run] [--force]
+```
+
+Publishes local content to an OCI registry so another host — or a wiped local
+cache — can pull it back by digest. With neither `--outputs` nor `--pins`, both
+are pushed.
+
+- **Outputs**: walks the current checkout's build graph (same traversal as
+  `gc`); for every built node it pushes the leaf blobs that the registry is
+  missing and writes a manifest tagged `build-artifact-<identity>`.
+- **Pins**: pushes each pin's blob closure and a manifest tagged
+  `import-<id>` or `builddeps-<id>` (from the pin's kind).
+
+Pushes are idempotent: blobs already present are skipped, and an existing tag is
+left untouched unless `--force`. `--dry-run` reports what would be pushed without
+contacting the registry to write. The registry comes from `--registry` or
+`GL_REGISTRY` (e.g. `localhost:5000/gl-ng`); the store is the usual `GL_CACHE`.
+
+## Pull-through: `GL_REGISTRY`
+
+Set `GL_REGISTRY=<host>/<repo>` (or pass `--registry` to `gl build`) to make the
+local store a **pull-through cache**. On a read miss the store fetches the
+missing content from the registry and materializes it locally, verified by
+re-hashing:
+
+- a **map miss** for an artifact identity fetches its `build-artifact-<identity>`
+  manifest and pulls every leaf blob, reconstructing the local manifest;
+- a **blob miss** (including the `.deb` and rootfs-layer reads that bind-mount by
+  path) pulls that blob by digest.
+
+With no registry configured the store is pure-local and behaves exactly as
+before. Cache-admin commands (`gl cache blobs get`, `map get`, …) never pull —
+they always show local truth.
 
 ## Cache layout
 

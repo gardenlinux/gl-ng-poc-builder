@@ -41,6 +41,7 @@
 - [Repository Layout](./internals/layout.md)
 - [Foundations](./internals/foundations/index.md)
   - [`objstore` — Content-Addressed Store](./internals/foundations/objstore.md)
+  - [`ociclient` — OCI Registry Client & Pull-Through Backend](./internals/foundations/ociclient.md)
   - [`dirhash` — Deterministic Directory Hashing](./internals/foundations/dirhash.md)
   - [`stream` — Stream Processing Primitives](./internals/foundations/stream.md)
   - [`log` — Structured Logging](./internals/foundations/log.md)

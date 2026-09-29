@@ -16,6 +16,65 @@ func setupPins(t *testing.T) *Pins {
 	return p
 }
 
+func TestPins_KindRoundTrips(t *testing.T) {
+	p := setupPins(t)
+	h := MustHash("1111111111111111111111111111111111111111111111111111111111111111")
+
+	// Create defaults to import.
+	impID, err := p.Create("orig", []Hash{h})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	imp, err := p.Get(impID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if imp.Kind != PinKindImport {
+		t.Errorf("Create default kind = %q, want %q", imp.Kind, PinKindImport)
+	}
+
+	// CreateKind records builddeps and round-trips it.
+	bdID, err := p.CreateKind(PinKindBuildDeps, "build-deps", []Hash{h})
+	if err != nil {
+		t.Fatalf("CreateKind: %v", err)
+	}
+	bd, err := p.Get(bdID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if bd.Kind != PinKindBuildDeps {
+		t.Errorf("kind = %q, want %q", bd.Kind, PinKindBuildDeps)
+	}
+
+	// Empty kind passed to CreateKind normalizes to import.
+	emptyID, err := p.CreateKind("", "x", []Hash{h})
+	if err != nil {
+		t.Fatalf("CreateKind empty: %v", err)
+	}
+	e, _ := p.Get(emptyID)
+	if e.Kind != PinKindImport {
+		t.Errorf("empty kind normalized to %q, want %q", e.Kind, PinKindImport)
+	}
+}
+
+func TestPins_LegacyFileWithoutKindLoadsAsImport(t *testing.T) {
+	p := setupPins(t)
+	// A pre-Kind pin file has no `kind:` field.
+	id := "deadbeefdeadbeef"
+	body := "name: legacy\nblobs:\n  - 1111111111111111111111111111111111111111111111111111111111111111\n"
+	if err := os.WriteFile(p.path(id), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Get(id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Kind != PinKindImport {
+		t.Errorf("legacy pin kind = %q, want %q", got.Kind, PinKindImport)
+	}
+}
+
+// TestPins_CreateListGetRoundTrip verifies basic create/list/get.
 func TestPins_CreateListGetRoundTrip(t *testing.T) {
 	p := setupPins(t)
 

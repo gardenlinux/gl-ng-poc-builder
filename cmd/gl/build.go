@@ -30,6 +30,7 @@ func cmdBuild(args []string) error {
 	cacheDir := fs.String("cache", "", "cache directory")
 	confDir := fs.String("conf-dir", "", "configuration directory (contains pkgs/, rootfs.yml)")
 	stubPath := fs.String("stub", "", "path to exec_env_stub binary")
+	registry := fs.String("registry", "", "pull-through registry+repo, e.g. localhost:5000/gl-ng (or GL_REGISTRY)")
 	invalidate := fs.String("invalidate", "", "delete the map entry for the target with this Key (e.g. rootfs:gl-rootfs:amd64) and exit")
 	logsOutput := fs.String("logs-output", "", "path to write the build-logs JSON snapshot (default: $TMPDIR/gl-build-*.json)")
 	fs.Parse(args)
@@ -46,6 +47,7 @@ func cmdBuild(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
+	attachRemote(store, *registry)
 
 	confRoot := *confDir
 	if confRoot == "" {

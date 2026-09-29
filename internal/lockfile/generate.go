@@ -80,7 +80,7 @@ func Generate(cfg Config) (*Result, error) {
 	releaseDate := fetchReleaseDate(cfg.Ctx, cfg.Store, cfg.RepoURL, cfg.Dist, cfg.Cookie)
 	pinName := fmt.Sprintf("%s build-deps (%s, %s, %s from %s)",
 		cfg.PkgName, cfg.Arch, cfg.Dist, releaseDate, cfg.RepoURL)
-	if _, err := cfg.Store.Pins.Create(pinName, append([]objstore.Hash{blobHash}, debHashes...)); err != nil {
+	if _, err := cfg.Store.Pins.CreateKind(objstore.PinKindBuildDeps, pinName, append([]objstore.Hash{blobHash}, debHashes...)); err != nil {
 		return nil, fmt.Errorf("create build-deps pin: %w", err)
 	}
 
@@ -380,7 +380,7 @@ func GenerateRootfs(cfg RootfsConfig) (*Result, error) {
 	releaseDate := fetchReleaseDate(cfg.Ctx, cfg.Store, cfg.RepoURL, cfg.Dist, cfg.Cookie)
 	pinName := fmt.Sprintf("rootfs build-deps (%s, %s, %s from %s)",
 		cfg.Arch, cfg.Dist, releaseDate, cfg.RepoURL)
-	if _, err := cfg.Store.Pins.Create(pinName, append([]objstore.Hash{blobHash}, debHashes...)); err != nil {
+	if _, err := cfg.Store.Pins.CreateKind(objstore.PinKindBuildDeps, pinName, append([]objstore.Hash{blobHash}, debHashes...)); err != nil {
 		return nil, fmt.Errorf("create rootfs build-deps pin: %w", err)
 	}
 

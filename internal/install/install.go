@@ -32,7 +32,13 @@ func InstallResolved(ctx context.Context, cont *container.Container, mountNS *co
 			continue
 		}
 		hash, err := objstore.NewHash(pkg.SHA256)
-		if err != nil || !store.Blobs.Has(hash) {
+		if err != nil {
+			return fmt.Errorf("missing blob for %s (%s)", pkg.Name, pkg.SHA256)
+		}
+		// Fall through to the remote by digest if the .deb is not local
+		// (oci-cache-design.md §11.6). No-op with no remote / already present.
+		store.EnsureBlob(hash)
+		if !store.Blobs.Has(hash) {
 			return fmt.Errorf("missing blob for %s (%s)", pkg.Name, pkg.SHA256)
 		}
 

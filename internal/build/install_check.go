@@ -33,7 +33,7 @@ func (b *debianBinaryPkg) installCheck(ctx context.Context, store *objstore.Stor
 	if err != nil {
 		return fmt.Errorf("load lockfile for install check: %w", err)
 	}
-	lockfileReader, err := store.Blobs.Open(lockfileHash)
+	lockfileReader, err := store.OpenBlob(lockfileHash)
 	if err != nil {
 		return fmt.Errorf("open lockfile blob: %w", err)
 	}
@@ -134,7 +134,7 @@ func (b *debianBinaryPkg) installCheck(ctx context.Context, store *objstore.Stor
 // buildTestPackageEntry constructs an index.Package for the package under test
 // from its control blob and .deb hash.
 func (b *debianBinaryPkg) buildTestPackageEntry(store *objstore.Store, controlHash objstore.Hash, debHash objstore.Hash) *index.Package {
-	controlReader, err := store.Blobs.Open(controlHash)
+	controlReader, err := store.OpenBlob(controlHash)
 	if err != nil {
 		return nil
 	}

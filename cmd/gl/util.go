@@ -7,6 +7,7 @@ import (
 
 	"gl-ng/internal/log"
 	"gl-ng/internal/objstore"
+	"gl-ng/internal/ociclient"
 )
 
 func findConfDir() string {
@@ -31,6 +32,31 @@ func openStore(dir string) (*objstore.Store, error) {
 		dir = objstore.DefaultRoot()
 	}
 	return objstore.Open(dir)
+}
+
+// registryRef resolves the registry+repo to use for pull-through: the explicit
+// flag value wins, else GL_REGISTRY, else empty (pure-local, no remote).
+func registryRef(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv("GL_REGISTRY")
+}
+
+// attachRemote wires a pull-through remote onto store when a registry is
+// configured (via --registry flag or GL_REGISTRY). A missing or malformed ref
+// leaves the store pure-local. Use only on read-path commands (build, rootfs,
+// lockfile install) — never on cache-admin, which must show local truth.
+func attachRemote(store *objstore.Store, flagVal string) {
+	ref := registryRef(flagVal)
+	if ref == "" {
+		return
+	}
+	regHost, repo := ociclient.SplitRef(ref)
+	if repo == "" {
+		return
+	}
+	store.SetRemote(ociclient.NewRemote(ociclient.New(regHost, repo)))
 }
 
 // rootContext returns a context with a console log target attached and a

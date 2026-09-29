@@ -26,6 +26,11 @@ type Pin struct {
 	// ID is the 16-hex-char pin identity (also the pins/<id>.yml basename).
 	// It is not serialized into the file body — the filename carries it.
 	ID string `yaml:"-"`
+	// Kind classifies the pin as "import" (orig tarballs) or "builddeps"
+	// (per-arch lockfile index + .deb closure). It selects the remote tag
+	// prefix on publish (oci-cache-design.md §11.3). An empty Kind on disk
+	// loads as PinKindImport for back-compat with pre-Kind pin files.
+	Kind string `yaml:"-"`
 	// Name is free-form human text describing the pin's origin (package,
 	// version, suite, source repo, InRelease timestamp).
 	Name string `yaml:"name"`
@@ -33,8 +38,16 @@ type Pin struct {
 	Blobs []Hash `yaml:"blobs"`
 }
 
+// Pin kinds. These are the source-vs-build-deps split of §6, reused as the
+// remote tag prefix on publish (§11.3).
+const (
+	PinKindImport    = "import"
+	PinKindBuildDeps = "builddeps"
+)
+
 // pinFile is the on-disk YAML shape. Blobs are stored as hex strings.
 type pinFile struct {
+	Kind  string   `yaml:"kind,omitempty"`
 	Name  string   `yaml:"name"`
 	Blobs []string `yaml:"blobs"`
 }
@@ -68,12 +81,23 @@ func (p *Pins) path(id string) string {
 }
 
 // Create generates a fresh id, writes the pin file atomically (temp + rename),
-// and returns the id. Pin creation is load-bearing: callers that store
-// local-only blobs must create the pin before reporting success, so a GC
-// running in between cannot delete unrecoverable local work.
+// and returns the id. The pin is recorded as PinKindImport. Pin creation is
+// load-bearing: callers that store local-only blobs must create the pin before
+// reporting success, so a GC running in between cannot delete unrecoverable
+// local work.
 func (p *Pins) Create(name string, blobs []Hash) (string, error) {
+	return p.CreateKind(PinKindImport, name, blobs)
+}
+
+// CreateKind is Create with an explicit pin kind (PinKindImport /
+// PinKindBuildDeps). An empty kind is normalized to PinKindImport.
+func (p *Pins) CreateKind(kind, name string, blobs []Hash) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if kind == "" {
+		kind = PinKindImport
+	}
 
 	id, err := newPinID()
 	if err != nil {
@@ -89,7 +113,7 @@ func (p *Pins) Create(name string, blobs []Hash) (string, error) {
 		}
 	}
 
-	if err := p.write(id, Pin{Name: name, Blobs: blobs}); err != nil {
+	if err := p.write(id, Pin{Kind: kind, Name: name, Blobs: blobs}); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -101,7 +125,7 @@ func (p *Pins) write(id string, pin Pin) error {
 	for _, h := range pin.Blobs {
 		hexes = append(hexes, h.String())
 	}
-	data, err := yaml.Marshal(pinFile{Name: pin.Name, Blobs: hexes})
+	data, err := yaml.Marshal(pinFile{Kind: pin.Kind, Name: pin.Name, Blobs: hexes})
 	if err != nil {
 		return fmt.Errorf("marshal pin %s: %w", id, err)
 	}
@@ -146,7 +170,11 @@ func (p *Pins) load(id string) (Pin, error) {
 		}
 		blobs = append(blobs, h)
 	}
-	return Pin{ID: id, Name: pf.Name, Blobs: blobs}, nil
+	kind := pf.Kind
+	if kind == "" {
+		kind = PinKindImport
+	}
+	return Pin{ID: id, Kind: kind, Name: pf.Name, Blobs: blobs}, nil
 }
 
 // ids returns the sorted list of valid pin ids present on disk.
