@@ -1,0 +1,51 @@
+name: e2e
+
+# The end-to-end build exercises the real from-source pipeline: it forks the
+# exec_env_stub into user namespaces, bootstraps a minimal root, and builds
+# actual Debian source packages (hello, plus the synthetic fixtures) through
+# dpkg-buildpackage. It needs user namespaces, the uidmap helpers, and network
+# access to a Debian mirror, so it runs separately from the fast unit-test CI.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install build and runtime tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential dpkg-dev fakeroot debhelper \
+            uidmap bzip2 gzip xz-utils zstd gpgv
+
+      - name: Enable unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04 runners confine unprivileged userns via AppArmor;
+          # relax it so the container layers can create namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          # Grant the runner user subordinate id ranges for newuidmap/newgidmap.
+          user=$(id -un)
+          if ! grep -q "^$user:" /etc/subuid; then echo "$user:100000:65536" | sudo tee -a /etc/subuid; fi
+          if ! grep -q "^$user:" /etc/subgid; then echo "$user:100000:65536" | sudo tee -a /etc/subgid; fi
+
+      - name: Build
+        run: make build
+
+      # Runs the full test suite, including the from-source integration builds
+      # that stand up a real rootfs and build packages end to end.
+      - name: Full test suite (from-source builds)
+        run: make test

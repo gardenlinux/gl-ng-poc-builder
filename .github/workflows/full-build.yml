@@ -1,0 +1,47 @@
+name: full-build
+
+# The complete GardenLinux base built entirely from source: prepare a staging
+# conf-dir (import every source package template and generate lockfiles), then
+# build the whole dependency graph and assemble a rootfs — with no OCI cache,
+# so everything is compiled from scratch. This is deliberately manual: building
+# the toolchain (gcc, glibc, systemd, ...) from source is a multi-hour job that
+# is the motivation for the OCI-backed cache introduced later. Use it to
+# validate the pipeline against the real package set on demand.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install build and runtime tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential dpkg-dev fakeroot debhelper \
+            uidmap bzip2 gzip xz-utils zstd gpgv uuid-runtime patch
+
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          user=$(id -un)
+          if ! grep -q "^$user:" /etc/subuid; then echo "$user:100000:65536" | sudo tee -a /etc/subuid; fi
+          if ! grep -q "^$user:" /etc/subgid; then echo "$user:100000:65536" | sudo tee -a /etc/subgid; fi
+
+      - name: Build gl
+        run: make build
+
+      - name: Prepare staging and build the full rootfs from source
+        run: make e2e
