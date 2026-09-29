@@ -1,8 +1,8 @@
 // Command gl is the command-line entry point to the gl-ng build system.
 //
 // Subcommands are dispatched from main and grow as the system does; each lives
-// in its own file. Today the system can import Debian source packages into the
-// object store.
+// in its own file. Today the system can import Debian source packages and
+// generate build-dependency lockfiles.
 package main
 
 import (
@@ -28,6 +28,12 @@ func main() {
 	switch cmd {
 	case "import":
 		err = cmdImport(args)
+	case "lockfile":
+		err = cmdLockfile(args)
+	case "lockfile-rootfs":
+		err = cmdLockfileRootfs(args)
+	case "status":
+		err = cmdStatus(args)
 	case "version", "--version":
 		fmt.Printf("gl %s\n", version)
 		return
@@ -50,5 +56,5 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: gl <command> [arguments]")
-	fmt.Fprintln(os.Stderr, "commands: import, version, help")
+	fmt.Fprintln(os.Stderr, "commands: import, lockfile, lockfile-rootfs, status, version, help")
 }
