@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Unit tests only. Tests that need user namespaces, the exec_env_stub, or
+      # network access skip themselves under -short, so this stays fast and
+      # hermetic; the full end-to-end build runs in a separate workflow.
+      - name: Test
+        run: go test -short -count=1 ./...
