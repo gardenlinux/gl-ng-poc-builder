@@ -1,0 +1,17 @@
+{
+    "name": "gl-ng",
+    "build": {
+        "dockerfile": "Containerfile"
+    },
+    "remoteUser": "dev",
+    "workspaceFolder": "/home/dev/workspace",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/workspace,type=bind",
+    "runArgs": [
+        "--userns=keep-id"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": ["golang.Go"]
+        }
+    }
+}

@@ -1,0 +1,5 @@
+# Build outputs and ephemeral state.
+bin/
+
+# Go test binaries.
+*.test

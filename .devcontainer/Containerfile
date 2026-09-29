@@ -1,0 +1,48 @@
+FROM debian:stable
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Toolchain and build/runtime dependencies for gl-ng:
+#   - Go is installed from the upstream tarball below (Debian's package lags).
+#   - build-essential/dpkg-dev/fakeroot/debhelper: Debian source package builds.
+#   - the stream tools (xz/gzip/bzip2/zstd/tar/gpgv): artifact stream processing.
+#   - uidmap: unprivileged user-namespace setup (newuidmap/newgidmap).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        build-essential \
+        bzip2 \
+        ca-certificates \
+        curl \
+        debhelper \
+        dpkg-dev \
+        fakeroot \
+        git \
+        gnupg \
+        gpgv \
+        gzip \
+        make \
+        tar \
+        uidmap \
+        uuid-runtime \
+        xz-utils \
+        zstd \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pin the Go toolchain to match go.mod. Kept out of apt so the version is
+# reproducible regardless of the Debian release the base image tracks.
+ARG GO_VERSION=1.25.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+      | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/home/dev/go/bin:$PATH
+
+# Unprivileged user namespaces need the setuid helpers to carry the right
+# capabilities rather than the setuid bit.
+RUN chmod -s /usr/bin/newuidmap /usr/bin/newgidmap \
+ && setcap cap_setuid=ep /usr/bin/newuidmap \
+ && setcap cap_setgid=ep /usr/bin/newgidmap
+
+RUN groupadd -g 1000 dev \
+ && useradd -m -u 1000 -g 1000 -s /bin/bash dev
+
+USER dev
+WORKDIR /home/dev/workspace
