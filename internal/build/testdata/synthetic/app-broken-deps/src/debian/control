@@ -1,0 +1,13 @@
+Source: app-broken-deps
+Section: misc
+Priority: optional
+Maintainer: nobody <nobody@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: app-broken
+Architecture: any
+Depends: this-package-does-not-exist
+Description: synthetic test fixture with an unsatisfiable dependency
+ Used to verify that gl-ng's locality validation gate rejects packages
+ whose runtime dependencies cannot be satisfied from the local build set.

@@ -1,0 +1,12 @@
+Source: app-needs-foo
+Section: misc
+Priority: optional
+Maintainer: nobody <nobody@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: app-foo
+Architecture: any
+Depends: libfoo1
+Description: synthetic application that depends on libfoo1
+ A test fixture for gl-ng. Validates cross-package runtime_depends.

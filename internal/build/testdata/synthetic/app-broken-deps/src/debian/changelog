@@ -1,0 +1,5 @@
+app-broken-deps (1.0-1) unstable; urgency=low
+
+  * Synthetic test fixture for gl-ng.
+
+ -- nobody <nobody@localhost>  Thu, 01 Jan 1970 00:00:00 +0000

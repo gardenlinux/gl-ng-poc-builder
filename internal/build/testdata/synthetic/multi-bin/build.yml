@@ -1,0 +1,2 @@
+runtime_depends:
+  multi-bin-tools: [multi-bin:multi-bin-shared]

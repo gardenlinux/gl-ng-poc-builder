@@ -1,0 +1,17 @@
+Source: multi-bin
+Section: misc
+Priority: optional
+Maintainer: nobody <nobody@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: multi-bin-shared
+Architecture: any
+Description: synthetic shared library for multi-bin source
+ A test fixture: shared component co-produced with multi-bin-tools.
+
+Package: multi-bin-tools
+Architecture: any
+Depends: multi-bin-shared
+Description: synthetic tool that uses multi-bin-shared
+ A test fixture for gl-ng. Tests sibling Includes (no graph cycle).

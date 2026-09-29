@@ -1,8 +1,3 @@
-// Command gl is the command-line entry point to the gl-ng build system.
-//
-// Subcommands are dispatched from main and grow as the system does; each lives
-// in its own file. Today the system can import Debian source packages and
-// generate build-dependency lockfiles.
 package main
 
 import (
@@ -11,9 +6,6 @@ import (
 
 	"gl-ng/internal/log"
 )
-
-// version is overridable at link time (-X main.version=...) once releases exist.
-var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -26,6 +18,12 @@ func main() {
 
 	var err error
 	switch cmd {
+	case "build":
+		err = cmdBuild(args)
+	case "graph":
+		err = cmdGraph(args)
+	case "cache":
+		err = cmdCache(args)
 	case "import":
 		err = cmdImport(args)
 	case "lockfile":
@@ -34,9 +32,10 @@ func main() {
 		err = cmdLockfileRootfs(args)
 	case "status":
 		err = cmdStatus(args)
-	case "version", "--version":
-		fmt.Printf("gl %s\n", version)
-		return
+	case "exec-chroot":
+		err = cmdExecChroot(args)
+	case "resolve":
+		err = cmdResolve(args)
 	case "help", "--help", "-h":
 		usage()
 		return
@@ -56,5 +55,5 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: gl <command> [arguments]")
-	fmt.Fprintln(os.Stderr, "commands: import, lockfile, lockfile-rootfs, status, version, help")
+	fmt.Fprintln(os.Stderr, "commands: build, graph, cache, import, lockfile, lockfile-rootfs, status, exec-chroot, resolve")
 }

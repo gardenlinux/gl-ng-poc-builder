@@ -1,0 +1,11 @@
+Source: lib-foo
+Section: libs
+Priority: optional
+Maintainer: nobody <nobody@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: libfoo1
+Architecture: any
+Description: synthetic library test fixture
+ A test fixture for gl-ng. Provides a no-op "libfoo" library.

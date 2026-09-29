@@ -1,4 +1,4 @@
-.PHONY: all build build_demo fmt vet test clean
+.PHONY: all build build_demo fmt vet test e2e clean
 
 # bin/ is the canonical build output. Tests and, later, the e2e driver consume
 # the binaries from here rather than rebuilding via `go build`.
@@ -35,6 +35,12 @@ vet:
 # every package is exercised end-to-end.
 test: build
 	GL_EXEC_ENV_STUB=$(STUB_BIN) GL_GL_BIN=$(GL_BIN) go test -count=1 ./...
+
+# End-to-end driver: consumes whatever is in bin/. The dependency on `build`
+# guarantees freshness; the script itself never rebuilds. It prepares a staging
+# conf-dir (import + lockfiles) and builds a rootfs entirely from source.
+e2e: build
+	GL_EXEC_ENV_STUB=$(STUB_BIN) GL_GL_BIN=$(GL_BIN) tests/full_build_test.sh
 
 clean:
 	rm -rf $(BIN_DIR)

@@ -1,0 +1,2 @@
+runtime_depends:
+  app-foo: [lib-foo:libfoo1]

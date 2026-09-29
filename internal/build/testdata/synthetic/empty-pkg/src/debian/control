@@ -1,0 +1,13 @@
+Source: empty-pkg
+Section: misc
+Priority: optional
+Maintainer: nobody <nobody@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: empty-pkg
+Architecture: any
+Description: synthetic empty test package
+ A test fixture for gl-ng. Single binary, no Depends, no runtime_depends —
+ the trivial smoke-test shape against which all other synthetic fixtures
+ vary one thing at a time.
