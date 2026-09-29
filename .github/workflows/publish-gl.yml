@@ -1,0 +1,58 @@
+name: publish-gl
+
+# Build the gl toolchain (gl + exec_env_stub) and publish it as an OCI
+# artifact to this repo's GHCR namespace. The staging repo pulls it back with
+# oras and runs builds against its own conf-dir — see gl-ng-poc-staging. The
+# artifact carries both binaries so a consumer needs a single pull to build.
+#
+# GHCR pushes use the Actions GITHUB_TOKEN (packages: write); a fine-grained PAT
+# cannot push to the org registry directly, which is exactly why the toolchain
+# is published from CI here and consumed by oras there.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/gl
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build gl and exec_env_stub
+        run: make build
+
+      - uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push toolchain artifact
+        run: |
+          cd bin
+          oras push \
+            "${IMAGE}:${{ github.sha }}" \
+            "${IMAGE}:latest" \
+            --artifact-type application/vnd.gardenlinux.gl.toolchain \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            gl:application/vnd.gardenlinux.gl.binary \
+            exec_env_stub:application/vnd.gardenlinux.gl.binary
+
+      - name: Summary
+        run: |
+          echo "Published \`${IMAGE}:latest\` and \`${IMAGE}:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pull with: \`oras pull ${IMAGE}:latest\`" >> "$GITHUB_STEP_SUMMARY"
