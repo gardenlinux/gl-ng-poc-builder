@@ -1,4 +1,4 @@
-.PHONY: all build build_demo fmt vet test e2e clean
+.PHONY: all build build_demo fmt vet test e2e doc serve-doc stop-doc clean
 
 # bin/ is the canonical build output. Tests and, later, the e2e driver consume
 # the binaries from here rather than rebuilding via `go build`.
@@ -7,6 +7,16 @@ GL_BIN := $(BIN_DIR)/gl
 STUB_BIN := $(BIN_DIR)/exec_env_stub
 LOGDEMO_BIN := $(BIN_DIR)/logdemo
 TASKDEMO_BIN := $(BIN_DIR)/taskdemo
+
+DOC_DIR := $(CURDIR)/doc
+DOC_BUILD := $(DOC_DIR)/book
+DOC_PID := $(DOC_DIR)/.serve.pid
+DOC_LOG := $(DOC_DIR)/.serve.log
+
+# mdbook-mermaid is typically installed via `cargo install` into ~/.cargo/bin,
+# which is not always on the interactive PATH. Make it discoverable so the
+# mermaid preprocessor runs and diagrams render.
+DOC_PATH := $(HOME)/.cargo/bin:$(PATH)
 
 all: fmt vet build
 
@@ -42,5 +52,33 @@ test: build
 e2e: build
 	GL_EXEC_ENV_STUB=$(STUB_BIN) GL_GL_BIN=$(GL_BIN) tests/full_build_test.sh
 
+doc:
+	PATH="$(DOC_PATH)" mdbook build $(DOC_DIR)
+
+# `make serve-doc` launches `mdbook serve` detached, recording the PID. A
+# second invocation while a previous server is alive is a no-op; use
+# `make stop-doc` to terminate.
+serve-doc:
+	@if [ -f $(DOC_PID) ] && kill -0 $$(cat $(DOC_PID)) 2>/dev/null; then \
+		echo "mdbook serve already running (pid $$(cat $(DOC_PID))); see $(DOC_LOG)"; \
+	else \
+		rm -f $(DOC_PID); \
+		PATH="$(DOC_PATH)" nohup mdbook serve $(DOC_DIR) >$(DOC_LOG) 2>&1 & echo $$! >$(DOC_PID); \
+		echo "mdbook serve started (pid $$(cat $(DOC_PID))); log: $(DOC_LOG)"; \
+	fi
+
+stop-doc:
+	@if [ ! -f $(DOC_PID) ]; then \
+		echo "no $(DOC_PID); nothing to stop"; \
+	else \
+		PID=$$(cat $(DOC_PID)); \
+		if kill -0 $$PID 2>/dev/null; then \
+			kill -TERM $$PID && echo "sent SIGTERM to mdbook serve (pid $$PID)"; \
+		else \
+			echo "pid $$PID from $(DOC_PID) is not alive"; \
+		fi; \
+		rm -f $(DOC_PID); \
+	fi
+
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(DOC_BUILD) $(DOC_PID) $(DOC_LOG)
